@@ -1,6 +1,9 @@
+import time
+import threading
 import curses
 
 from buffer import Buffer
+from client import Client
 
 class Window:
     def init_curses(self):
@@ -28,6 +31,7 @@ class Window:
         return (numlines, numcols)
 
     def drawscreen(self):
+        self.dontupdate.acquire()
         # determine terminal width and height
         numlines, numcols = self.get_termsize()
 
@@ -43,13 +47,18 @@ class Window:
         self.screen.addstr(0, 0, tbtext_padded, curses.color_pair(1))
         self.screen.refresh()
 
-        # render currend buffer
+        # render current buffer
         if len(self.buffers) > 0:
             currentbuffer = self.buffers[self.buffer_index]
-            self.screen.addstr(1,0, currentbuffer.title)
+            blankline = ""
+            for i in range(numcols):
+                blankline += " "
+            self.screen.addstr(1,0, blankline)
+            self.screen.addstr(1,0, currentbuffer.name)
             self.screen.addstr(2,0, currentbuffer.render(width=numcols,
                 height=numlines-4))    
 
+        self.dontupdate.release()
         
     def receive_command(self):
         numlines, numcols = self.get_termsize()
@@ -62,13 +71,14 @@ class Window:
         self.screen.addstr(numlines-1, 0, cl)
 
         # get command w/ visual response
-
+        self.dontupdate.acquire()
         curses.echo()
         curses.curs_set(1)
         self.screen.addstr(numlines-1, 0, ":")
         command = self.screen.getstr(numlines-1, 1)
         curses.curs_set(0)
         curses.noecho()
+        self.dontupdate.release()
 
         if command == 'q':
             self.running = False
@@ -76,6 +86,28 @@ class Window:
             self.screen.addstr(numlines-1,0,"received unknown command:\"%s\"" %
                     (command,))
 
+    def create_message(self):
+        numlines, numcols = self.get_termsize()
+
+        # clear command line
+        cl = ""
+        for i in range(numcols-1):
+            cl += " "
+
+        self.dontupdate.acquire()
+        self.screen.addstr(numlines-1, 0, cl)
+
+        # get command w/ visual response
+
+        curses.echo()
+        curses.curs_set(1)
+        self.screen.addstr(numlines-1, 0, "# ")
+        message = self.screen.getstr(numlines-1, 1)
+        curses.curs_set(0)
+        curses.noecho()
+        channel = self.buffers[self.buffer_index].generator
+        channel.send_message(message)
+        self.dontupdate.release()
 
     def mainloop(self):
         while self.running:
@@ -97,19 +129,40 @@ class Window:
                 self.buffers[self.buffer_index].scroll(-50)
             elif c == 4:        # Ctrl+d
                 self.buffers[self.buffer_index].scroll(50)
+            elif c == ord('i'):
+                self.create_message()
             elif c == ord(':'):
                 self.receive_command()
-            # use this for debugging.
-            #else:
-                #self.buffers[self.buffer_index].content.append(
-                        #"Key Pressed:" + str(c))
 
+        self.quitting.set()
         self.quit_curses()
 
-    def __init__(self):
+    @staticmethod
+    def refresh_messages(channels, signal):
+        while not signal.is_set():
+            for channel in channels:
+                channel.retrieve_messages()
+                channel.update()
+            time.sleep(5)
+
+    def update(self):
+        self.drawscreen()
+
+
+    def __init__(self, access_token):
         self.running = True
         self.buffers = []
         self.buffer_index = 0
-        for i in range(3):
-            self.buffers.append(Buffer("Buffer "+str(i)))
+        self.client = Client(access_token=access_token)
+        self.client.get_my_channels()
+        for channel in self.client.channels:
+            tmp = Buffer(channel.name, channel)
+            tmp.observers.append(self)
+            self.buffers.append(tmp)
+
+        self.dontupdate = threading.Lock()
+        self.quitting = threading.Event()
+        self.updatethread = threading.Thread(target=Window.refresh_messages,
+                args=(self.client.channels, self.quitting))
+        self.updatethread.start()
         self.init_curses()

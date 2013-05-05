@@ -1,8 +1,17 @@
 class Buffer:
-    def __init__(self, title):
+    def __init__(self, name, generator):
         self.top = 0
-        self.title = title
+        self.name = name
+        self.observers = []
         self.content = []
+        self.generator = generator
+        self.generator.observers.append(self)
+        self.update() 
+
+    def update(self):
+        self.content = self.generator.render()
+        for o in self.observers:
+            o.update()
 
     def scroll(self, lines):
         """
@@ -26,7 +35,7 @@ class Buffer:
         for c in self.content:
             if len(c) > width:
                 # truncate long lines
-                lines.append(c[:width])
+                lines.append(c[:width-1])
             else:
                 lines.append(c)
 
@@ -40,6 +49,6 @@ class Buffer:
         rendered_str = ""
 
         for line in rendered_lines:
-            rendered_str += str(line) + "\n"
+            rendered_str += line.encode("utf-8") + "\n"
 
         return rendered_str
